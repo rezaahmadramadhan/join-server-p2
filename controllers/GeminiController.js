@@ -188,9 +188,9 @@ class GeminiController {
     } catch (error) {
       console.error("Unexpected error in generateQuiz:", error);
     }
-  }
-  static async checkAnswers(req, res, next) {
-    try {      const { quizId, answers } = req.body || {};
+  }  static async checkAnswers(req, res, next) {
+    try {
+      const { quizId, answers } = req.body || {};
       
       if (!quizId || !answers) {
         throw { name: "BadRequest", message: "Quiz ID and answers are required" };
@@ -199,6 +199,7 @@ class GeminiController {
       // Ensure answers is an array and log what we received for debugging
       console.log("Received answers:", JSON.stringify(answers, null, 2));
       
+      // Convert single answer to array if needed
       const userAnswers = Array.isArray(answers) ? answers : [answers];
       
       // Retrieve the stored quiz
@@ -209,42 +210,80 @@ class GeminiController {
         throw { name: "NotFound", message: "Quiz not found. It may have expired or been completed already." };
       }
       
+      // Log quiz data for debugging
+      console.log("Quiz questions and correct answers:", 
+        JSON.stringify(quizData.map(q => ({
+          question: q.question.substring(0, 30) + "...",
+          correctAnswer: q.correctAnswer
+        })), null, 2)
+      );
+      
       // Calculate the score and provide detailed feedback
       let correctCount = 0;
-      const results = userAnswers.map((answer) => {
-        // Extract questionId and user's answer
-        const questionId = typeof answer === 'object' && 'questionId' in answer ? 
-          answer.questionId : 
-          typeof answer === 'object' && 'id' in answer ? 
-            answer.id : 0;
-            
-        const userAnswer = typeof answer === 'object' && 'answer' in answer ? 
-          answer.answer : 
-          typeof answer === 'string' ? 
-            answer : '';
+      
+      // Process each user answer
+      const results = userAnswers.map(answer => {
+        // Extract questionId and userAnswer regardless of format
+        let questionId = 0;
+        let userAnswer = "";
         
-        if (questionId >= quizData.length || questionId < 0) {
-          return { valid: false, message: "Question does not exist" };
+        if (typeof answer === 'object') {
+          // Handle object format with questionId or id
+          questionId = 'questionId' in answer ? 
+            parseInt(answer.questionId, 10) : 
+            'id' in answer ? 
+              parseInt(answer.id, 10) : 0;
+          
+          // Extract user's actual answer
+          userAnswer = 'answer' in answer ? 
+            String(answer.answer).trim().toUpperCase() : "";
+        } else if (typeof answer === 'string') {
+          // Handle string format (assumes questionId=0)
+          userAnswer = answer.trim().toUpperCase();
         }
         
+        // Verify question exists
+        if (questionId >= quizData.length || questionId < 0) {
+          return { 
+            valid: false, 
+            message: "Question does not exist",
+            questionId
+          };
+        }
+        
+        // Get question data
         const question = quizData[questionId];
-        const isCorrect = userAnswer.toUpperCase() === question.correctAnswer.toUpperCase();
+        
+        // Normalize the correct answer
+        const correctAnswer = question.correctAnswer.toUpperCase();
+        
+        // Check if the answer is correct
+        const isCorrect = userAnswer === correctAnswer;
         
         if (isCorrect) {
           correctCount++;
         }
-          return {
+        
+        // Log validation results
+        console.log(
+          `Q${questionId}: "${question.question.substring(0, 20)}..." - ` +
+          `User: "${userAnswer}", Correct: "${correctAnswer}" - ${isCorrect ? "CORRECT" : "INCORRECT"}`
+        );
+        
+        // Return detailed result
+        return {
           questionId,
           question: question.question,
           userAnswer,
           isCorrect,
-          correctAnswer: question.correctAnswer,
-          correctOption: question.options[question.correctAnswer],
+          correctAnswer,
+          correctOption: question.options[correctAnswer],
           explanation: question.explanation,
-          options: question.options  // Include options in the response for better feedback
+          options: question.options
         };
       });
       
+      // Calculate score as percentage
       const score = (correctCount / quizData.length) * 100;
       
       // Generate performance message based on score
@@ -258,24 +297,28 @@ class GeminiController {
       } else {
         performanceMessage = "Keep practicing! Review the explanations to strengthen your knowledge.";
       }
-        // Process results to ensure correct feedback for each question
+      
+      // Create final feedback messages for each question
       const processedResults = results.map(result => {
         if (!result.valid && result.message) {
           return result; // Return invalid question as-is
         }
         
-        // Create a proper feedback message for each question
-        let feedbackMessage = result.isCorrect 
-          ? "Correct! " + (result.explanation || "")
-          : `Not quite. The correct answer is ${result.correctAnswer}: ${result.correctOption}. ` + 
-            (result.explanation || "");
-            
+        // Make sure we have the correct option text
+        const correctOptionText = result.options?.[result.correctAnswer] || 
+          `Option ${result.correctAnswer}`;
+        
+        // Create feedback message
+        const feedbackMessage = result.isCorrect 
+          ? `✅ Correct! ${result.explanation || ""}`
+          : `❌ Not quite. The correct answer is ${result.correctAnswer}: ${correctOptionText}. ${result.explanation || ""}`;
+        
         return {
           ...result,
           feedbackMessage
         };
       });
-      
+        // Send the response with processed results
       res.status(200).json({
         success: true,
         message: "Quiz answers checked successfully",
