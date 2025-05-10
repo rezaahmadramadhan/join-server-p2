@@ -5,7 +5,7 @@ const { User } = require("../models");
 
 class UserController {
   static home(req, res) {
-    return res.json("Sorry, this endpoint is under construction");
+    return res.json("This API is under Reza's supervision");
   }
 
   static async register(req, res, next) {
