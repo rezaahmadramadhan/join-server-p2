@@ -62,8 +62,7 @@ class GeminiController {
       Make sure the response is valid JSON with no additional text before or after.`;
       
       const quizResponse = await generateContent(prompt);
-      
-      let quizData;
+        let quizData;
       try {
         const jsonMatch = quizResponse.match(/\[\s*{[\s\S]*}\s*\]/);
         const jsonStr = jsonMatch ? jsonMatch[0] : quizResponse;
@@ -73,6 +72,42 @@ class GeminiController {
         if (!Array.isArray(quizData)) {
           throw new Error("Response is not an array");
         }
+        
+        // Validate the structure of each quiz question
+        quizData = quizData.map((q, index) => {
+          // Ensure the question has all required fields
+          if (!q.question || !q.options || !q.correctAnswer || !q.explanation) {
+            console.warn(`Quiz question ${index} is missing required fields, applying defaults`);
+          }
+          
+          // Make sure options are present and have A, B, C, D keys
+          const validOptions = q.options && 
+            typeof q.options === 'object' && 
+            'A' in q.options && 
+            'B' in q.options && 
+            'C' in q.options && 
+            'D' in q.options;
+          
+          if (!validOptions) {
+            console.warn(`Quiz question ${index} has invalid options, applying defaults`);
+            q.options = q.options || {
+              A: "Option A", 
+              B: "Option B", 
+              C: "Option C", 
+              D: "Option D"
+            };
+          }
+          
+          // Ensure correctAnswer is one of A, B, C, D
+          if (!q.correctAnswer || !['A', 'B', 'C', 'D'].includes(q.correctAnswer.toUpperCase())) {
+            console.warn(`Quiz question ${index} has invalid correctAnswer, defaulting to A`);
+            q.correctAnswer = 'A';
+          } else {
+            q.correctAnswer = q.correctAnswer.toUpperCase();
+          }
+          
+          return q;
+        });
         
         const quizForUser = quizData.map((q, index) => ({
           id: index,
@@ -154,16 +189,16 @@ class GeminiController {
       console.error("Unexpected error in generateQuiz:", error);
     }
   }
-
   static async checkAnswers(req, res, next) {
-    try {
-      const { quizId, answers } = req.body || {};
+    try {      const { quizId, answers } = req.body || {};
       
       if (!quizId || !answers) {
         throw { name: "BadRequest", message: "Quiz ID and answers are required" };
       }
       
-      // Ensure answers is an array
+      // Ensure answers is an array and log what we received for debugging
+      console.log("Received answers:", JSON.stringify(answers, null, 2));
+      
       const userAnswers = Array.isArray(answers) ? answers : [answers];
       
       // Retrieve the stored quiz
@@ -176,10 +211,17 @@ class GeminiController {
       
       // Calculate the score and provide detailed feedback
       let correctCount = 0;
-      const results = userAnswers.map((answer, index) => {
-        // Make sure we're accessing the correct question based on the provided answer
-        const questionId = typeof answer.questionId !== 'undefined' ? answer.questionId : index;
-        const userAnswer = typeof answer === 'object' ? answer.answer : answer;
+      const results = userAnswers.map((answer) => {
+        // Extract questionId and user's answer
+        const questionId = typeof answer === 'object' && 'questionId' in answer ? 
+          answer.questionId : 
+          typeof answer === 'object' && 'id' in answer ? 
+            answer.id : 0;
+            
+        const userAnswer = typeof answer === 'object' && 'answer' in answer ? 
+          answer.answer : 
+          typeof answer === 'string' ? 
+            answer : '';
         
         if (questionId >= quizData.length || questionId < 0) {
           return { valid: false, message: "Question does not exist" };
@@ -191,15 +233,15 @@ class GeminiController {
         if (isCorrect) {
           correctCount++;
         }
-        
-        return {
+          return {
           questionId,
           question: question.question,
           userAnswer,
           isCorrect,
           correctAnswer: question.correctAnswer,
           correctOption: question.options[question.correctAnswer],
-          explanation: question.explanation
+          explanation: question.explanation,
+          options: question.options  // Include options in the response for better feedback
         };
       });
       
@@ -216,6 +258,23 @@ class GeminiController {
       } else {
         performanceMessage = "Keep practicing! Review the explanations to strengthen your knowledge.";
       }
+        // Process results to ensure correct feedback for each question
+      const processedResults = results.map(result => {
+        if (!result.valid && result.message) {
+          return result; // Return invalid question as-is
+        }
+        
+        // Create a proper feedback message for each question
+        let feedbackMessage = result.isCorrect 
+          ? "Correct! " + (result.explanation || "")
+          : `Not quite. The correct answer is ${result.correctAnswer}: ${result.correctOption}. ` + 
+            (result.explanation || "");
+            
+        return {
+          ...result,
+          feedbackMessage
+        };
+      });
       
       res.status(200).json({
         success: true,
@@ -225,7 +284,7 @@ class GeminiController {
           correctCount,
           totalQuestions: quizData.length,
           performanceMessage,
-          results,
+          results: processedResults,
           answeredAll: userAnswers.length === quizData.length
         }
       });
